@@ -1,45 +1,187 @@
-SET SERVEROUTPUT ON;
+/*******************
+=========================================
+CPRG-307 Assignment 3
+Authors:
+   - Minh Tam Nguyen
+   - Mikael Ly
+   - Xiaomei He
+   - Elliot Jost
 
-DECLARE
-BEGIN
-   -- Outer loop: select distinct transaction numbers to process one transaction at a time
-   FOR txn_id_rec IN (
-      SELECT DISTINCT transaction_no
-        FROM new_transactions
-   ) LOOP
-      BEGIN
-         -- Check if transaction number is NULL, raise error if yes
-         IF txn_id_rec.transaction_no IS NULL THEN
-            RAISE_APPLICATION_ERROR(
-               -20001,
-               'Missing transaction number'
-            );
-         END IF;
+This is the solution file for Assignment 3 of Databases. 
+=========================================
+=========================================
+Part 1 Requirements
+=========================================
+- Use explicit cursors to read from NEW_TRANSACTIONS
 
-         -- Inner loop: process all rows for the current transaction
-         FOR txn_row_rec IN (
-            SELECT transaction_no,
-                   transaction_date,
-                   description,
-                   account_no,
-                   transaction_type,
-                   transaction_amount
-              FROM new_transactions
-             WHERE transaction_no = txn_id_rec.transaction_no
-         ) LOOP
-            DBMS_OUTPUT.PUT_LINE('Processing: transaction id: '
-                                 || txn_row_rec.transaction_no
+- Insert the read tables into TRANSACTION_DETAIL and TRANSACTION_HISTORY
+
+- Update the appropriate account balance in ACCOUNT
+   - Determine Debit(D) or Credit(C) to decide whether to add or subtract.
+   
+- Removed processed transactions from NEW_TRANSACTIONS
+
+- Include COMMIT to save changes
+=========================================
+Part 2 Requirements
+=========================================
+- Handle good + bad transactions
+
+- Exception handling for both anticipated and unanticipated errors
+
+- Error logging
+   - Write descriptive error messages and transaction info into the WKIS_ERROR_LOG table
+
+- Bad Transactions
+   -   Remain in NEW_TRANSACTIONS (don't delete)
+   - Should not update ACCOUNT, TRANSACTION_DETAIL, or TRANSACTION_HISTORY
+
+- Valid Transactions
+   - Remove processed transactions from NEW_TRANSACTIONS (same as part 1)
+
+- Error Handling Rules
+   - Only first error per transaction logged
+   - Do not exit main loop on error, continue processing other transactions
+
+- Only allowed hard coding 'C' and 'D' values as Constants
+
+=========================================
+Part 2 Errors to handle
+=========================================
+- Missing Transaction Number (NULL transaction number)
+- Debits and Credits Not Equal (transaction imbalance)
+- Invalid Account Number (account not found)
+- Negative Transaction Amount
+- Invalid Transaction Type (anything other than C or D)
+- Unanticipated Errors
+
+
+*******************/
+
+   SET SERVEROUTPUT ON;
+
+declare 
+   -- Explicit Cursor for transaction id's
+   cursor c_txn_ids is
+   select distinct transaction_no
+     from new_transactions;
+
+   -- Explicit cursor for getting rows
+   cursor c_txn_rows (
+      p_txn_no new_transactions.transaction_no%type
+   ) is
+   select transaction_no,
+          transaction_date,
+          description,
+          account_no,
+          transaction_type,
+          transaction_amount
+     from new_transactions
+    where transaction_no = p_txn_no
+    order by account_no;
+
+    -- Explicit cursor for getting null records
+   cursor c_null_txn_rows is
+   select transaction_no,
+          transaction_date,
+          description,
+          account_no,
+          transaction_type,
+          transaction_amount
+     from new_transactions
+    where transaction_no is null;
+
+    -- Constants
+
+   g_credit       constant varchar2(1) := 'C'; -- constant for account type, represents Credit
+   g_debit        constant varchar2(1) := 'D'; -- constant for account type, represents Debit
+
+    -- Work Variables
+   v_txn_no       new_transactions.transaction_no%type; -- the current transaction number being processed
+   r_row          c_txn_rows%rowtype; -- a transaction row
+   v_default_type account.default_type%type; -- the account's normal balance side, C or D
+   v_balance      account.account_balance%type; -- the account's current balance
+   v_first_date   new_transactions.transaction_date%type; -- holding var for the transaction_date of the current transaction
+   v_first_desc   new_transactions.description%type; -- holding var for the description of the current transaction
+   v_exists       number; -- the number of duplicates of a row in wkis_error_log
+begin
+   -- handle null transaction numbers
+   -- ===============================
+   open c_null_txn_rows; -- open the null transactions cursor
+   fetch c_null_txn_rows into r_row;
+   if c_null_txn_rows%found then
+      v_first_date := r_row.transaction_date;
+      v_first_desc := r_row.description;
+   
+   -- ensure null error entry is not duplicated (not already in the error log)
+      select count(*)
+        into v_exists
+        from wkis_error_log
+       where transaction_no is null
+         and error_msg like 'Missing transaction number';
+
+   -- insert error into log
+      if v.exists = 0 then
+         insert into wkis_error_log (
+            transaction_no,
+            transaction_date,
+            description,
+            error_msg
+         ) values ( null,
+                    v_first_date,
+                    v_first_desc,
+                    'Missing transaction number' );
+      end if;
+      dbms_output.put_line("Logged missing Transaction Number");
+   end if;
+   close c_null_txn_rows;
+   -- ===============================
+
+   -- Outer loop: Select distinct transaction number to process one transaction at a time
+   -- process valid transactions
+   open c_txn_ids;
+   loop
+      fetch c_txn_ids into v_txn_no;
+      exit when c_txn_ids%notfound;
+
+      -- open up embedded block to read in all rows and detect first error
+      begin
+         v_err_found := false; -- whether an error has been found
+         v_er_msg := null; -- error message
+         v_total_debits := 0; -- total transaction in debits
+         v_total_credit := 0; -- total transaction in credits
+         v_first_date := null; -- current row's transaction date
+         v_first_desc := null; -- current row's description
+
+         -- open explicit cursor
+         open c_txn_rows(v_txn_no);
+
+         -- capture first row to keep header info available
+         fetch c_txn_rows into r_row;
+         if c_txn_rows%found then
+            v_first_date := r_row.transaction_date;
+            v_first_desc := r_row.description;
+
+         -- print processing info
+            dbms_output.put_line('Processing: transaction id: '
+                                 || r_row.transaction_no
                                  || ' amount: '
-                                 || txn_row_rec.transaction_amount
-                                 || ' type: ' || txn_row_rec.transaction_type);
-         END LOOP;
+                                 || r_row.transaction_amount
+                                 || ' type: ' || r_row.transaction_type);
 
-      EXCEPTION
-         WHEN OTHERS THEN
-            DBMS_OUTPUT.PUT_LINE('Error: ' || SQLERRM);
+         end if;
+
+
+         end; -- end of embedded block
+
+      exception
+         when others then
+            dbms_output.put_line('Error: ' || sqlerrm);
             -- Insert error message into error log table
-            INSERT INTO wkis_error_log (error_msg) VALUES (SQLERRM);
-      END;
-   END LOOP;
-END;
+            insert into wkis_error_log ( error_msg ) values ( sqlerrm );
+      end;
+
+   end loop; -- end of outer loop
+   close c_txn_ids;
+end;
 /

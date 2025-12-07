@@ -12,7 +12,7 @@ This is the solution file for Assignment 3 of Databases.
 =========================================
 Part 1 Requirements
 =========================================
-- Use explicit cursors to read from NEW_TRANSACTIONS
+- Use explicit cursors to read from NEW_TRANSACTIONS [Implemented]
 
 - Insert the read tables into TRANSACTION_DETAIL and TRANSACTION_HISTORY
 
@@ -43,12 +43,12 @@ Part 2 Requirements
    - Only first error per transaction logged
    - Do not exit main loop on error, continue processing other transactions
 
-- Only allowed hard coding 'C' and 'D' values as Constants
+- Only allowed hard coding 'C' and 'D' values as Constants [Complete]
 
 =========================================
 Part 2 Errors to handle
 =========================================
-- Missing Transaction Number (NULL transaction number)
+- Missing Transaction Number (NULL transaction number) [Complete]
 - Debits and Credits Not Equal (transaction imbalance)
 - Invalid Account Number (account not found)
 - Negative Transaction Amount
@@ -162,24 +162,62 @@ begin
             v_first_date := r_row.transaction_date;
             v_first_desc := r_row.description;
 
+         -- Check for errors in this section
+         -- ===============================
+         -- IF NOT v_err_found then
+
+         end if;
+         -- ===============================
+         -- Begin processing in this section, or log error
+         -- ===============================
+         -- If error, log only first error for this transaction number
+         if v_err_found then
+            select count(*)
+              into v_exists
+              from wkis_error_log
+             where transaction_no = v_txn_no;
+
+            -- If there are no duplicate entries in log, log the error
+            if v_exists = 0 then
+               insert into wkis_error_log (
+                  transaction_no,
+                  transaction_date,
+                  description,
+                  error_msg
+               ) values ( v_txn_no,
+                          v_first_date,
+                          v_first_desc,
+                          v_err_msg );
+            end if;
+
+            dbms_output.put_line('Error with Transaction No. '
+                                 || v_txn_no
+                                 || ':' || v_err_msg);
+         -- ===============================      
+         -- If transaction is clean (no errors found), begin processing
+         -- ===============================
          -- print processing info
+         else
             dbms_output.put_line('Processing: transaction id: '
                                  || r_row.transaction_no
                                  || ' amount: '
                                  || r_row.transaction_amount
                                  || ' type: ' || r_row.transaction_type);
-
          end if;
-
+         
+         -- ===============================
 
          end; -- end of embedded block
 
+      -- Exception Handling
+      -- ===============================
       exception
          when others then
             dbms_output.put_line('Error: ' || sqlerrm);
             -- Insert error message into error log table
             insert into wkis_error_log ( error_msg ) values ( sqlerrm );
       end;
+      -- ===============================
 
    end loop; -- end of outer loop
    close c_txn_ids;

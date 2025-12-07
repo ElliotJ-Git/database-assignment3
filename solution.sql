@@ -206,6 +206,60 @@ begin
          end if;
          
          -- ===============================
+         -- ===============================
+
+         -- Insert TRANSACTION_HISTORY once per transaction
+            insert into transaction_history (transaction_no, transaction_date, description) 
+            values (v_txn_no, v_first_date, v_first_desc); 
+            v_history_inserted := true;
+
+            -- Process the first row (and subsequent rows in loop)
+            -- Loop processes the already-fetched first row then fetches remaining rows 
+            loop
+               -- Insert transaction detail for this row
+               insert into transaction_detail (transaction_no, account_no, transaction_type, transaction_amount) 
+               values (r_row.transaction_no, r_row.account_no, r_row.transaction_type, r_row.transaction_amount);
+
+               -- Update account balance for this row 
+               select account_balance, default_type 
+                 into v_balance, v_default_type       
+                 from account                         
+                where account_no = r_row.account_no; 
+
+               -- Adjust balance based on transaction type and account default type 
+               if r_row.transaction_type = g_debit then 
+                  if v_default_type = g_debit then
+                     v_balance := v_balance + r_row.transaction_amount; 
+                  else
+                     v_balance := v_balance - r_row.transaction_amount; 
+                  end if;
+               elsif r_row.transaction_type = g_credit then 
+                  if v_default_type = g_credit then         
+                     v_balance := v_balance + r_row.transaction_amount; 
+                  else
+                     v_balance := v_balance - r_row.transaction_amount; 
+                  end if;
+               else
+                  -- If transaction_type is invalid, raise an application error to be caught below  
+                  raise_application_error(-20001, 'Invalid transaction type for transaction ' || v_txn_no || ' account ' || r_row.account_no);
+               end if;
+
+               update account set account_balance = v_balance where account_no = r_row.account_no; 
+
+               fetch c_txn_rows into r_row; 
+               exit when c_txn_rows%notfound; 
+            end loop; -- end processing rows loop 
+
+            delete from new_transactions where transaction_no = v_txn_no;
+
+            -- Commit changes to persist TRANSACTION_DETAIL, TRANSACTION_HISTORY and ACCOUNT updates
+            commit;
+
+         close c_txn_rows;
+         -- ===============================
+         -- ===============================
+
+
 
          end; -- end of embedded block
 
